@@ -1,0 +1,184 @@
+import tailwindcss from '@tailwindcss/vite';
+import react from '@vitejs/plugin-react';
+import { execSync, spawn, ChildProcess } from 'child_process';
+import fs from 'fs';
+import http from 'http';
+import path from 'path';
+import { defineConfig, Plugin } from 'vite';
+
+function checkBackendReady(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = http.request(
+      {
+        host: '127.0.0.1',
+        port: 8081,
+        path: '/api/health',
+        method: 'GET',
+        timeout: 250,
+      },
+      (res) => {
+        resolve(res.statusCode === 200 || res.statusCode === 503);
+      }
+    );
+    req.on('error', () => {
+      resolve(false);
+    });
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(false);
+    });
+    req.end();
+  });
+}
+
+function backendPlugin(): Plugin {
+  let backendProcess: ChildProcess | null = null;
+  let isBackendReady = false;
+
+  return {
+    name: 'go-backend-runner',
+    configureServer(server) {
+      const binPath = path.resolve(__dirname, 'backend/server-bin');
+
+      if (!fs.existsSync(binPath)) {
+        console.warn('[go-backend] backend/server-bin not found, skipping backend launch.');
+        return;
+      }
+
+      // Ensure binary is executable
+      try {
+        fs.chmodSync(binPath, 0o755);
+      } catch (err) {
+        console.error('[go-backend] Failed to set executable permission on server-bin:', err);
+      }
+
+      // Terminate any stale server-bin processes before launching
+      try {
+        execSync('pkill -x server-bin 2>/dev/null || true');
+      } catch {
+        // ignore
+      }
+
+      console.log('[go-backend] Spawning Go backend server on port 8081...');
+      backendProcess = spawn(binPath, [], {
+        cwd: path.resolve(__dirname, 'backend'),
+        env: {
+          ...process.env,
+          PORT: '8081',
+          GIN_MODE: process.env.GIN_MODE || 'release',
+          MONGO_URI:
+            process.env.MONGO_URI ||
+            'mongodb://localhost:27017/?connectTimeoutMS=100&serverSelectionTimeoutMS=100',
+          REDIS_ADDR: process.env.REDIS_ADDR || 'localhost:6379',
+          JWT_SECRET:
+            process.env.JWT_SECRET ||
+            'dev_jwt_secret_key_change_in_production_12345',
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      // Pipe output to stdout so normal Go log.Printf lines don't get misclassified as stderr errors
+      backendProcess.stdout?.on('data', (chunk) => {
+        process.stdout.write(`[backend] ${chunk}`);
+      });
+      backendProcess.stderr?.on('data', (chunk) => {
+        process.stdout.write(`[backend] ${chunk}`);
+      });
+
+      backendProcess.on('error', (err) => {
+        console.error('[go-backend] Process error:', err);
+      });
+
+      backendProcess.on('exit', (code, signal) => {
+        console.log(`[go-backend] Exited with code ${code}, signal ${signal}`);
+        backendProcess = null;
+        isBackendReady = false;
+      });
+
+      // Periodically check readiness until backend binds to 8081
+      const checkInterval = setInterval(async () => {
+        if (!isBackendReady) {
+          const ready = await checkBackendReady();
+          if (ready) {
+            isBackendReady = true;
+            console.log('[go-backend] Go backend is ready on port 8081');
+            clearInterval(checkInterval);
+          }
+        } else {
+          clearInterval(checkInterval);
+        }
+      }, 300);
+
+      // Middleware: intercept /api requests before the proxy while backend is spinning up
+      server.middlewares.use(async (req, res, next) => {
+        if (req.url && req.url.startsWith('/api')) {
+          if (!isBackendReady) {
+            const ready = await checkBackendReady();
+            if (ready) {
+              isBackendReady = true;
+              return next();
+            }
+
+            // Return a structured initializing response without triggering proxy ECONNREFUSED
+            res.writeHead(200, {
+              'Content-Type': 'application/json',
+              'Cache-Control': 'no-cache',
+            });
+            res.end(
+              JSON.stringify({
+                status: 'starting',
+                timestamp: new Date().toISOString(),
+                message: 'Backend server is initializing...',
+                services: {
+                  mongodb: 'initializing',
+                  redis: 'initializing',
+                },
+              })
+            );
+            return;
+          }
+        }
+        next();
+      });
+
+      const cleanup = () => {
+        clearInterval(checkInterval);
+        if (backendProcess && !backendProcess.killed) {
+          try {
+            backendProcess.kill('SIGTERM');
+          } catch {
+            // ignore
+          }
+          backendProcess = null;
+        }
+      };
+
+      server.httpServer?.on('close', cleanup);
+      process.on('SIGTERM', cleanup);
+      process.on('SIGINT', cleanup);
+      process.on('exit', cleanup);
+    },
+  };
+}
+
+export default defineConfig(() => {
+  return {
+    plugins: [react(), tailwindcss(), backendPlugin()],
+    resolve: {
+      alias: {
+        '@': path.resolve(__dirname, '.'),
+      },
+    },
+    server: {
+      hmr: process.env.DISABLE_HMR !== 'true',
+      watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      proxy: {
+        '/api': {
+          target: 'http://127.0.0.1:8081',
+          changeOrigin: true,
+          ws: true,
+        },
+      },
+    },
+  };
+});
