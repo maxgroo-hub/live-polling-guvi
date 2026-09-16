@@ -54,7 +54,19 @@ function backendPlugin(): Plugin {
 
       // Terminate any stale server-bin processes before launching
       try {
-        execSync('pkill -x server-bin 2>/dev/null || true');
+        execSync('pkill -9 -x server-bin 2>/dev/null || true');
+      } catch {
+        // ignore
+      }
+
+      // Ensure local Redis and MongoDB services are active if installed
+      try {
+        execSync('redis-cli ping 2>/dev/null || redis-server --daemonize yes 2>/dev/null || true');
+      } catch {
+        // ignore
+      }
+      try {
+        execSync('mkdir -p /data/db && mongod --fork --logpath /var/log/mongod.log --bind_ip 127.0.0.1 2>/dev/null || true');
       } catch {
         // ignore
       }
@@ -66,9 +78,8 @@ function backendPlugin(): Plugin {
           ...process.env,
           PORT: '8081',
           GIN_MODE: process.env.GIN_MODE || 'release',
-          MONGO_URI:
-            process.env.MONGO_URI ||
-            'mongodb://localhost:27017/?connectTimeoutMS=100&serverSelectionTimeoutMS=100',
+          MONGO_URI: process.env.MONGO_URI || 'mongodb://localhost:27017',
+          MONGO_DB_NAME: process.env.MONGO_DB_NAME || 'polling_db',
           REDIS_ADDR: process.env.REDIS_ADDR || 'localhost:6379',
           JWT_SECRET:
             process.env.JWT_SECRET ||

@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Activity, Server, Radio, LogIn, LogOut, User as UserIcon } from 'lucide-react';
-import { User } from './types';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Activity, Server, Radio, LogIn, LogOut, User as UserIcon, Shield } from 'lucide-react';
+import { Poll, User } from './types';
 import { LivePollView } from './components/LivePollView';
 import { PollList } from './components/PollList';
 import { CreatePollModal } from './components/CreatePollModal';
 import { AuthModal } from './components/AuthModal';
+import { DeletePollModal } from './components/DeletePollModal';
+import { ToastProvider, useToast } from './components/Toast';
+import { api, getStoredToken, setStoredToken } from './services/api';
 
 interface HealthResponse {
   status: string;
@@ -16,29 +19,47 @@ interface HealthResponse {
   message?: string;
 }
 
-export default function App() {
+function MainApp() {
+  const { showToast } = useToast();
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [selectedPollId, setSelectedPollId] = useState<string | null>(null);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [isHealthModalOpen, setIsHealthModalOpen] = useState(false);
+  const [pollToDelete, setPollToDelete] = useState<Poll | null>(null);
 
   // Authentication State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authToken, setAuthToken] = useState<string | null>(null);
 
-  // Initialize auth from localStorage & URL hash for deep linking
+  // Initialize auth from localStorage & /api/auth/me
   useEffect(() => {
-    const savedToken = localStorage.getItem('live_poll_token');
+    const token = getStoredToken();
     const savedUser = localStorage.getItem('live_poll_user');
-    if (savedToken && savedUser) {
-      try {
-        setAuthToken(savedToken);
-        setCurrentUser(JSON.parse(savedUser));
-      } catch {
-        localStorage.removeItem('live_poll_token');
-        localStorage.removeItem('live_poll_user');
+
+    if (token) {
+      setAuthToken(token);
+      if (savedUser) {
+        try {
+          setCurrentUser(JSON.parse(savedUser));
+        } catch {
+          // ignore
+        }
       }
+
+      // Verify token validity against /api/auth/me
+      api.getCurrentUser()
+        .then((user) => {
+          setCurrentUser(user);
+          localStorage.setItem('live_poll_user', JSON.stringify(user));
+        })
+        .catch(() => {
+          // Token expired or invalid
+          setStoredToken(null);
+          localStorage.removeItem('live_poll_user');
+          setAuthToken(null);
+          setCurrentUser(null);
+        });
     }
 
     // Check URL hash for initial poll selection e.g. #poll-id
@@ -65,10 +86,11 @@ export default function App() {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('live_poll_token');
+    setStoredToken(null);
     localStorage.removeItem('live_poll_user');
     setAuthToken(null);
     setCurrentUser(null);
+    showToast('You have been logged out.', 'info', 'Logged Out');
   };
 
   // Health check query
@@ -138,7 +160,7 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <span className="hidden md:inline-flex items-center gap-1.5 text-xs text-slate-300 bg-slate-800/60 px-2.5 py-1 rounded-lg border border-slate-700/40">
                   <UserIcon className="w-3 h-3 text-cyan-400" />
-                  {currentUser.name}
+                  <span>{currentUser.name}</span>
                 </span>
                 <button
                   id="logout-btn"
@@ -166,7 +188,7 @@ export default function App() {
       </header>
 
       {/* Main Content Area */}
-      <main className="flex-1 max-w-5xl w-full mx-auto p-4 sm:p-6 lg:p-8 flex flex-col justify-center">
+      <main className="flex-1 max-w-5xl w-full mx-auto p-4 sm:p-6 lg:p-8 flex flex-col justify-start">
         {selectedPollId ? (
           <LivePollView
             pollId={selectedPollId}
@@ -174,9 +196,13 @@ export default function App() {
             authToken={authToken}
             onBack={handleBackToPolls}
             onRequireAuth={() => setIsAuthModalOpen(true)}
+            onPollDeleted={() => {
+              handleBackToPolls();
+            }}
           />
         ) : (
           <PollList
+            currentUser={currentUser}
             onSelectPoll={handleSelectPoll}
             onCreatePollClick={() => {
               if (!authToken) {
@@ -185,6 +211,7 @@ export default function App() {
                 setIsCreateModalOpen(true);
               }
             }}
+            onOpenDeleteModal={(poll) => setPollToDelete(poll)}
           />
         )}
       </main>
@@ -237,6 +264,12 @@ export default function App() {
                     <span className="text-slate-400">Redis Status:</span>
                     <span className="text-emerald-400">{health.services?.redis}</span>
                   </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Overall Health:</span>
+                    <span className={health.status === 'healthy' ? 'text-emerald-400' : 'text-amber-400'}>
+                      {health.status}
+                    </span>
+                  </div>
                 </div>
               )}
             </div>
@@ -244,7 +277,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Modals */}
+      {/* Create Poll Modal */}
       <CreatePollModal
         isOpen={isCreateModalOpen}
         authToken={authToken}
@@ -256,11 +289,33 @@ export default function App() {
         }}
       />
 
+      {/* Authentication Modal */}
       <AuthModal
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}
         onAuthSuccess={handleAuthSuccess}
       />
+
+      {/* Delete Poll Modal from List View */}
+      {pollToDelete && (
+        <DeletePollModal
+          isOpen={!!pollToDelete}
+          pollId={pollToDelete.id}
+          pollTitle={pollToDelete.title}
+          onClose={() => setPollToDelete(null)}
+          onDeleted={() => {
+            showToast(`Poll "${pollToDelete.title}" deleted.`, 'info', 'Poll Deleted');
+            setPollToDelete(null);
+            // If the deleted poll was currently selected, return to list
+            if (selectedPollId === pollToDelete.id) {
+              handleBackToPolls();
+            }
+          }}
+          onError={(msg) => {
+            showToast(msg, 'error', 'Delete Failed');
+          }}
+        />
+      )}
 
       {/* Subtle Footer */}
       <footer className="mt-auto border-t border-slate-850 py-4 px-6 text-center text-xs text-slate-500">
@@ -270,5 +325,13 @@ export default function App() {
         </div>
       </footer>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ToastProvider>
+      <MainApp />
+    </ToastProvider>
   );
 }

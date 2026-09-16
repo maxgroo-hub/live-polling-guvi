@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
-import { X, Plus, Trash2 } from 'lucide-react';
+import { X, Plus, Trash2, Loader2 } from 'lucide-react';
+import { api, ApiError } from '../services/api';
+import { useToast } from './Toast';
 
 interface CreatePollModalProps {
   isOpen: boolean;
@@ -16,6 +18,7 @@ export const CreatePollModal: React.FC<CreatePollModalProps> = ({
   onSuccess,
   onRequireAuth,
 }) => {
+  const { showToast } = useToast();
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [options, setOptions] = useState<string[]>(['', '']);
@@ -66,28 +69,22 @@ export const CreatePollModal: React.FC<CreatePollModalProps> = ({
     setError(null);
 
     try {
-      const res = await fetch('/api/polls', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({
-          title: trimmedTitle,
-          description: description.trim(),
-          options: cleanOptions,
-        }),
+      const newPoll = await api.createPoll({
+        title: trimmedTitle,
+        description: description.trim() || undefined,
+        options: cleanOptions,
       });
 
-      const json = await res.json();
-      if (!res.ok) {
-        setError(json.message || 'Failed to create poll');
-      } else {
-        onSuccess(json.data.id);
-        onClose();
-      }
-    } catch {
-      setError('Network error while creating poll');
+      showToast('Poll created successfully!', 'success', 'Poll created');
+      onSuccess(newPoll.id);
+      setTitle('');
+      setDescription('');
+      setOptions(['', '']);
+      onClose();
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : 'Network error while creating poll';
+      setError(msg);
+      showToast(msg, 'error', 'Creation failed');
     } finally {
       setIsSubmitting(false);
     }
@@ -101,17 +98,12 @@ export const CreatePollModal: React.FC<CreatePollModalProps> = ({
           <button
             type="button"
             onClick={onClose}
+            disabled={isSubmitting}
             className="text-slate-400 hover:text-white p-1 cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
-
-        {!authToken && (
-          <div className="p-3 bg-amber-950/40 border border-amber-800/60 rounded-lg text-amber-200 text-xs">
-            Poll creation requires an account. Please log in or sign up.
-          </div>
-        )}
 
         {error && (
           <div className="p-3 bg-rose-950/40 border border-rose-800/60 rounded-lg text-rose-300 text-xs">
@@ -122,36 +114,35 @@ export const CreatePollModal: React.FC<CreatePollModalProps> = ({
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-xs font-medium text-slate-300 mb-1">
-              Poll Title *
+              Poll Title <span className="text-rose-400">*</span>
             </label>
             <input
               type="text"
+              required
+              placeholder="e.g., Which backend database do you prefer?"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g. Which programming language do you prefer?"
-              required
-              minLength={5}
-              className="w-full px-3 py-2 text-sm bg-slate-950 border border-slate-800 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+              className="w-full px-3 py-2 text-sm bg-slate-950 border border-slate-800 rounded-lg text-white focus:outline-none focus:border-cyan-500"
             />
           </div>
 
           <div>
             <label className="block text-xs font-medium text-slate-300 mb-1">
-              Description (Optional)
+              Description <span className="text-slate-500">(optional)</span>
             </label>
-            <input
-              type="text"
+            <textarea
+              rows={2}
+              placeholder="Brief context or guidelines for voters..."
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="Brief context for voters"
-              className="w-full px-3 py-2 text-sm bg-slate-950 border border-slate-800 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+              className="w-full px-3 py-2 text-sm bg-slate-950 border border-slate-800 rounded-lg text-white focus:outline-none focus:border-cyan-500 resize-none"
             />
           </div>
 
-          <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="block text-xs font-medium text-slate-300">
-                Options (2 to 10) *
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-medium text-slate-300">
+                Options <span className="text-rose-400">*</span> (min 2, max 10)
               </label>
               {options.length < 10 && (
                 <button
@@ -159,28 +150,29 @@ export const CreatePollModal: React.FC<CreatePollModalProps> = ({
                   onClick={handleAddOption}
                   className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1 cursor-pointer"
                 >
-                  <Plus className="w-3 h-3" />
+                  <Plus className="w-3.5 h-3.5" />
                   <span>Add Option</span>
                 </button>
               )}
             </div>
 
-            <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+            <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
               {options.map((opt, idx) => (
                 <div key={idx} className="flex items-center gap-2">
                   <input
                     type="text"
+                    required
+                    placeholder={`Option ${idx + 1}`}
                     value={opt}
                     onChange={(e) => handleOptionChange(idx, e.target.value)}
-                    placeholder={`Option ${idx + 1}`}
-                    required
-                    className="flex-1 px-3 py-1.5 text-sm bg-slate-950 border border-slate-800 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+                    className="flex-1 px-3 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-lg text-white focus:outline-none focus:border-cyan-500"
                   />
                   {options.length > 2 && (
                     <button
                       type="button"
                       onClick={() => handleRemoveOption(idx)}
                       className="p-1.5 text-slate-500 hover:text-rose-400 transition-colors cursor-pointer"
+                      title="Remove option"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -190,20 +182,28 @@ export const CreatePollModal: React.FC<CreatePollModalProps> = ({
             </div>
           </div>
 
-          <div className="pt-2 flex justify-end gap-2">
+          <div className="flex items-center justify-end gap-3 pt-2 border-t border-slate-800">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-xs font-medium rounded-lg text-slate-400 hover:text-white bg-slate-800 cursor-pointer"
+              disabled={isSubmitting}
+              className="px-3.5 py-1.5 text-xs text-slate-400 hover:text-white cursor-pointer"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={isSubmitting}
-              className="px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white transition-colors disabled:opacity-50 cursor-pointer"
+              className="px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
             >
-              {isSubmitting ? 'Creating...' : 'Publish Poll'}
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Creating Poll...</span>
+                </>
+              ) : (
+                <span>Publish Poll</span>
+              )}
             </button>
           </div>
         </form>

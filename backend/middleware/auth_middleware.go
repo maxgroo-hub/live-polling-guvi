@@ -17,10 +17,8 @@ const (
 
 func respondUnauthorized(c *gin.Context, code, message string) {
 	c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-		"error": gin.H{
-			"code":    code,
-			"message": message,
-		},
+		"error":   code,
+		"message": message,
 	})
 }
 

@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
-import { X } from 'lucide-react';
+import { X, Loader2 } from 'lucide-react';
 import { User } from '../types';
+import { api, ApiError, setStoredToken } from '../services/api';
+import { useToast } from './Toast';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -13,6 +15,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onClose,
   onAuthSuccess,
 }) => {
+  const { showToast } = useToast();
   const [isLogin, setIsLogin] = useState(true);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -27,29 +30,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setLoading(true);
     setError(null);
 
-    const endpoint = isLogin ? '/api/auth/login' : '/api/auth/signup';
-    const payload = isLogin ? { email, password } : { name, email, password };
-
     try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
-      const json = await res.json();
-      if (!res.ok) {
-        setError(json.message || 'Authentication failed');
+      let res;
+      if (isLogin) {
+        res = await api.login({ email, password });
       } else {
-        const token = json.data.token;
-        const user = json.data.user;
-        localStorage.setItem('live_poll_token', token);
-        localStorage.setItem('live_poll_user', JSON.stringify(user));
-        onAuthSuccess(token, user);
-        onClose();
+        res = await api.signup({ name, email, password });
       }
-    } catch {
-      setError('Network error during authentication');
+
+      setStoredToken(res.token);
+      localStorage.setItem('live_poll_user', JSON.stringify(res.user));
+      showToast(
+        isLogin ? `Welcome back, ${res.user.name}!` : `Account created! Welcome, ${res.user.name}!`,
+        'success',
+        isLogin ? 'Logged in' : 'Registered'
+      );
+      onAuthSuccess(res.token, res.user);
+      onClose();
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : 'Authentication failed';
+      setError(msg);
+      showToast(msg, 'error', 'Authentication error');
     } finally {
       setLoading(false);
     }
@@ -65,6 +66,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <button
             type="button"
             onClick={onClose}
+            disabled={loading}
             className="text-slate-400 hover:text-white p-1 cursor-pointer"
           >
             <X className="w-5 h-5" />
@@ -86,6 +88,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 required
+                placeholder="Your full name"
                 className="w-full px-3 py-2 text-sm bg-slate-950 border border-slate-800 rounded-lg text-white focus:outline-none focus:border-cyan-500"
               />
             </div>
@@ -98,6 +101,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
+              placeholder="you@example.com"
               className="w-full px-3 py-2 text-sm bg-slate-950 border border-slate-800 rounded-lg text-white focus:outline-none focus:border-cyan-500"
             />
           </div>
@@ -109,7 +113,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              minLength={8}
+              placeholder="Minimum 6 characters"
+              minLength={6}
               className="w-full px-3 py-2 text-sm bg-slate-950 border border-slate-800 rounded-lg text-white focus:outline-none focus:border-cyan-500"
             />
           </div>
@@ -117,23 +122,29 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-2 text-xs font-semibold rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white transition-colors disabled:opacity-50 mt-2 cursor-pointer"
+            className="w-full py-2 px-4 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-medium text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
           >
-            {loading ? 'Processing...' : isLogin ? 'Sign In' : 'Register'}
+            {loading ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>Processing...</span>
+              </>
+            ) : (
+              <span>{isLogin ? 'Log In' : 'Create Account'}</span>
+            )}
           </button>
         </form>
 
-        <div className="text-center pt-2 border-t border-slate-800 text-xs text-slate-400">
-          {isLogin ? "Don't have an account? " : 'Already registered? '}
+        <div className="text-center pt-2 border-t border-slate-800">
           <button
             type="button"
             onClick={() => {
               setIsLogin(!isLogin);
               setError(null);
             }}
-            className="text-cyan-400 hover:underline font-medium cursor-pointer"
+            className="text-xs text-cyan-400 hover:underline cursor-pointer"
           >
-            {isLogin ? 'Sign Up' : 'Log In'}
+            {isLogin ? "Don't have an account? Sign up" : 'Already have an account? Log in'}
           </button>
         </div>
       </div>
